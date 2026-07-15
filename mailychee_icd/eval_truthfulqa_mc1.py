@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import string
 
 from icd_generate import DEFAULT_WEAK_SYSTEM_PROMPT, format_prompt, load_model_and_tokenizer
 
@@ -165,7 +166,12 @@ def get_mc1(example):
         if isinstance(ground_truth, int):
             return choices, ground_truth
         if ground_truth not in choices:
-            raise ValueError("ground_truth was not found in choices.")
+            normalized = str(ground_truth).strip().rstrip(".").upper()
+            if len(normalized) == 1 and normalized in string.ascii_uppercase:
+                index = string.ascii_uppercase.index(normalized)
+                if index < len(choices):
+                    return choices, index
+            raise ValueError("ground_truth was not found in choices and was not a valid choice letter.")
         return choices, choices.index(ground_truth)
 
     targets = example["mc1_targets"]
@@ -188,8 +194,13 @@ def main() -> None:
         raise SystemExit("--alpha must be between 0 and 1")
 
     model, weak_model, tokenizer = load_model_and_tokenizer(args)
-    if args.dataset_jsonl:
-        with open(args.dataset_jsonl, "r", encoding="utf-8") as dataset_file:
+    default_jsonl = Path("/Users/mailychee/Downloads/mc1.jsonl")
+    dataset_jsonl = args.dataset_jsonl
+    if dataset_jsonl is None and default_jsonl.exists():
+        dataset_jsonl = str(default_jsonl)
+
+    if dataset_jsonl:
+        with open(dataset_jsonl, "r", encoding="utf-8") as dataset_file:
             dataset = [json.loads(line) for line in dataset_file if line.strip()]
     else:
         dataset = load_dataset("truthful_qa", "multiple_choice", split="validation")
