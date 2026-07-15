@@ -48,6 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--start", type=int, default=0)
+    parser.add_argument(
+        "--dataset-jsonl",
+        default=None,
+        help=(
+            "Optional local JSONL file. Each line should have question, "
+            "choices, and ground_truth."
+        ),
+    )
     parser.add_argument("--output-jsonl", default=None)
     parser.add_argument(
         "--no-chat-template",
@@ -151,6 +159,15 @@ def score_icd_continuation(
 
 
 def get_mc1(example):
+    if "choices" in example and "ground_truth" in example:
+        choices = example["choices"]
+        ground_truth = example["ground_truth"]
+        if isinstance(ground_truth, int):
+            return choices, ground_truth
+        if ground_truth not in choices:
+            raise ValueError("ground_truth was not found in choices.")
+        return choices, choices.index(ground_truth)
+
     targets = example["mc1_targets"]
     choices = targets["choices"]
     labels = targets["labels"]
@@ -171,10 +188,18 @@ def main() -> None:
         raise SystemExit("--alpha must be between 0 and 1")
 
     model, weak_model, tokenizer = load_model_and_tokenizer(args)
-    dataset = load_dataset("truthful_qa", "multiple_choice", split="validation")
+    if args.dataset_jsonl:
+        with open(args.dataset_jsonl, "r", encoding="utf-8") as dataset_file:
+            dataset = [json.loads(line) for line in dataset_file if line.strip()]
+    else:
+        dataset = load_dataset("truthful_qa", "multiple_choice", split="validation")
 
     end = None if args.max_examples is None else args.start + args.max_examples
-    rows = list(dataset.select(range(args.start, min(end or len(dataset), len(dataset)))))
+    stop = min(end or len(dataset), len(dataset))
+    if hasattr(dataset, "select"):
+        rows = list(dataset.select(range(args.start, stop)))
+    else:
+        rows = dataset[args.start:stop]
 
     output_file = open(args.output_jsonl, "w", encoding="utf-8") if args.output_jsonl else None
     correct = 0
@@ -217,8 +242,11 @@ def main() -> None:
                         {
                             "index": args.start + local_idx,
                             "question": example["question"],
-                            "gold": choices[gold_idx],
+                            "choices": choices,
+                            "ground_truth": choices[gold_idx],
+                            "ground_truth_index": gold_idx,
                             "prediction": choices[pred_idx],
+                            "prediction_index": pred_idx,
                             "correct": is_correct,
                             "scores": scores,
                         },

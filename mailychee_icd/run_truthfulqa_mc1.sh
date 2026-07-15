@@ -10,5 +10,6 @@ python eval_truthfulqa_mc1.py \
   --beta "${BETA:-1.2}" \
   --alpha "${ALPHA:-0.0}" \
   --dtype "${DTYPE:-auto}" \
+  ${DATASET_JSONL:+--dataset-jsonl "$DATASET_JSONL"} \
   ${MAX_EXAMPLES:+--max-examples "$MAX_EXAMPLES"} \
   ${OUTPUT_JSONL:+--output-jsonl "$OUTPUT_JSONL"}

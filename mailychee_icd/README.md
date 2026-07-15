@@ -109,6 +109,21 @@ python eval_truthfulqa_mc1.py \
   --output-jsonl truthfulqa_mc1_predictions.jsonl
 ```
 
+Evaluate a local JSONL file with `question`, `choices`, and `ground_truth`:
+
+```bash
+python eval_truthfulqa_mc1.py \
+  --mode icd \
+  --model google/gemma-2-2b-it \
+  --dataset-jsonl data/truthfulqa_mc1.jsonl
+```
+
+With the bash runner:
+
+```bash
+DATASET_JSONL=data/truthfulqa_mc1.jsonl MODEL=google/gemma-2-2b-it ./run_truthfulqa_mc1.sh
+```
+
 ## Notes
 
 This is intentionally minimal. It does not train the weak model; it implements
