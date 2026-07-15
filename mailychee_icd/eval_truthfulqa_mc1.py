@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Evaluate original LM or ICD scoring on TruthfulQA MC1.
+"""Evaluate original LM or ICD scoring on TruthfulQA MC1 JSONL.
 
 MC1 is single-answer multiple choice. We score every answer choice as a
 continuation of the question prompt and pick the highest-scoring choice.
+Each JSONL row must have: question, choices, ground_truth.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import string
 
 from icd_generate import DEFAULT_WEAK_SYSTEM_PROMPT, format_prompt, load_model_and_tokenizer
@@ -51,11 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument(
         "--dataset-jsonl",
-        default=None,
-        help=(
-            "Optional local JSONL file. Each line should have question, "
-            "choices, and ground_truth."
-        ),
+        default="/Users/mailychee/Downloads/mc1.jsonl",
+        help="Local JSONL file. Each line must have question, choices, and ground_truth.",
     )
     parser.add_argument("--output-jsonl", default=None)
     parser.add_argument(
@@ -160,31 +157,25 @@ def score_icd_continuation(
 
 
 def get_mc1(example):
-    if "choices" in example and "ground_truth" in example:
-        choices = example["choices"]
-        ground_truth = example["ground_truth"]
-        if isinstance(ground_truth, int):
-            return choices, ground_truth
-        if ground_truth not in choices:
-            normalized = str(ground_truth).strip().rstrip(".").upper()
-            if len(normalized) == 1 and normalized in string.ascii_uppercase:
-                index = string.ascii_uppercase.index(normalized)
-                if index < len(choices):
-                    return choices, index
-            raise ValueError("ground_truth was not found in choices and was not a valid choice letter.")
+    choices = example["choices"]
+    ground_truth = example["ground_truth"]
+
+    if isinstance(ground_truth, int):
+        return choices, ground_truth
+
+    if ground_truth in choices:
         return choices, choices.index(ground_truth)
 
-    targets = example["mc1_targets"]
-    choices = targets["choices"]
-    labels = targets["labels"]
-    correct_indices = [i for i, label in enumerate(labels) if label == 1]
-    if len(correct_indices) != 1:
-        raise ValueError("MC1 example did not have exactly one correct answer.")
-    return choices, correct_indices[0]
+    normalized = str(ground_truth).strip().rstrip(".").upper()
+    if len(normalized) == 1 and normalized in string.ascii_uppercase:
+        index = string.ascii_uppercase.index(normalized)
+        if index < len(choices):
+            return choices, index
+
+    raise ValueError("ground_truth must be a choice string, choice index, or letter like A/B/C.")
 
 
 def main() -> None:
-    from datasets import load_dataset
     from tqdm import tqdm
 
     args = build_parser().parse_args()
@@ -194,23 +185,12 @@ def main() -> None:
         raise SystemExit("--alpha must be between 0 and 1")
 
     model, weak_model, tokenizer = load_model_and_tokenizer(args)
-    default_jsonl = Path("/Users/mailychee/Downloads/mc1.jsonl")
-    dataset_jsonl = args.dataset_jsonl
-    if dataset_jsonl is None and default_jsonl.exists():
-        dataset_jsonl = str(default_jsonl)
-
-    if dataset_jsonl:
-        with open(dataset_jsonl, "r", encoding="utf-8") as dataset_file:
-            dataset = [json.loads(line) for line in dataset_file if line.strip()]
-    else:
-        dataset = load_dataset("truthful_qa", "multiple_choice", split="validation")
+    with open(args.dataset_jsonl, "r", encoding="utf-8") as dataset_file:
+        dataset = [json.loads(line) for line in dataset_file if line.strip()]
 
     end = None if args.max_examples is None else args.start + args.max_examples
     stop = min(end or len(dataset), len(dataset))
-    if hasattr(dataset, "select"):
-        rows = list(dataset.select(range(args.start, stop)))
-    else:
-        rows = dataset[args.start:stop]
+    rows = dataset[args.start:stop]
 
     output_file = open(args.output_jsonl, "w", encoding="utf-8") if args.output_jsonl else None
     correct = 0
