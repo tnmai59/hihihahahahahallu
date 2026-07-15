@@ -3,7 +3,7 @@ set -euo pipefail
 
 python eval_halueval.py \
   --mode icd \
-  --decision-mode generate \
+  --decision-mode likelihood \
   --model meta-llama/Llama-3.2-3B-Instruct \
   --task qa \
   --dataset-jsonl /Users/mailychee/Downloads/qa_data.json \

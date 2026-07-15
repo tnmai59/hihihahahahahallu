@@ -534,7 +534,7 @@ def main() -> None:
                             "ground_truth": candidate.ground_truth,
                             "prediction": prediction,
                             "correct": correct,
-                            "scores": scores,
+                            "scores_or_generation": scores,
                         },
                         ensure_ascii=True,
                     )
