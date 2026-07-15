@@ -187,6 +187,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--no-chat-template", action="store_true")
     parser.add_argument("--use-knowledge", action="store_true")
+    parser.add_argument(
+        "--prompt-style",
+        choices=["minimal", "one-shot"],
+        default="one-shot",
+        help="minimal is zero-shot/simple; one-shot uses one HaluEval demonstration.",
+    )
     parser.add_argument("--max-input-tokens", type=int, default=3072)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--system-prompt", default=None)
@@ -221,15 +227,17 @@ def normalize_label(label) -> str:
     raise ValueError(f"Cannot normalize label: {label!r}")
 
 
-def task_instruction(task: str) -> str:
+def task_instruction(task: str, prompt_style: str) -> str:
+    if prompt_style == "minimal":
+        return 'Determine whether the provided text contains hallucinated or non-factual information. Answer only "Yes" or "No".'
     return ONE_SHOT_INSTRUCTIONS.get(
         task,
         'Determine whether the response contains hallucinated or non-factual information. Answer only "Yes" or "No".',
     )
 
 
-def build_prompt_body(task: str, row: dict, candidate_text: str, use_knowledge: bool) -> str:
-    instruction = task_instruction(task)
+def build_prompt_body(task: str, row: dict, candidate_text: str, use_knowledge: bool, prompt_style: str) -> str:
+    instruction = task_instruction(task, prompt_style)
     parts = [instruction, ""]
 
     if task == "qa":
@@ -255,7 +263,15 @@ def build_prompt_body(task: str, row: dict, candidate_text: str, use_knowledge: 
     return "\n".join(parts)
 
 
-def row_candidates(task: str, row: dict, index: int, candidate_mode: str, rng: random.Random, use_knowledge: bool) -> list[Candidate]:
+def row_candidates(
+    task: str,
+    row: dict,
+    index: int,
+    candidate_mode: str,
+    rng: random.Random,
+    use_knowledge: bool,
+    prompt_style: str,
+) -> list[Candidate]:
     candidates: list[tuple[str, str, str]] = []
 
     if task == "qa":
@@ -287,7 +303,7 @@ def row_candidates(task: str, row: dict, index: int, candidate_mode: str, rng: r
 
     return [
         Candidate(
-            prompt_body=build_prompt_body(task, row, text, use_knowledge),
+            prompt_body=build_prompt_body(task, row, text, use_knowledge, prompt_style),
             text=text,
             ground_truth=label,
             source_index=index,
@@ -433,8 +449,8 @@ def generate_judgement(model, weak_model, tokenizer, prompt_body: str, args) -> 
     return parse_yes_no(text), {"generated": text}
 
 
-def calibration_prompt_body(task: str) -> str:
-    return task_instruction(task) + "\n\n#Your Judgement#: "
+def calibration_prompt_body(task: str, prompt_style: str) -> str:
+    return task_instruction(task, prompt_style) + "\n\n#Your Judgement#: "
 
 
 def classify_candidate(
@@ -499,12 +515,22 @@ def main() -> None:
 
     candidates: list[Candidate] = []
     for offset, row in enumerate(selected_rows):
-        candidates.extend(row_candidates(args.task, row, args.start + offset, args.candidate_mode, rng, args.use_knowledge))
+        candidates.extend(
+            row_candidates(
+                args.task,
+                row,
+                args.start + offset,
+                args.candidate_mode,
+                rng,
+                args.use_knowledge,
+                args.prompt_style,
+            )
+        )
 
     model, weak_model, tokenizer = load_model_and_tokenizer(args)
     calibration_scores = None
     if args.label_prior_calibration and args.decision_mode == "likelihood":
-        calibration_scores = score_yes_no(model, weak_model, tokenizer, calibration_prompt_body(args.task), args)
+        calibration_scores = score_yes_no(model, weak_model, tokenizer, calibration_prompt_body(args.task, args.prompt_style), args)
     output_file = open(args.output_jsonl, "w", encoding="utf-8") if args.output_jsonl else None
 
     tp = fp = tn = fn = invalid = 0
