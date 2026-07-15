@@ -8,6 +8,7 @@ python eval_halueval.py \
   --task qa \
   --dataset-jsonl /Users/mailychee/Downloads/qa_data.json \
   --prompt-style none \
+  --prompt-format mc \
   --candidate-mode random \
   --beta 1.0 \
   --alpha 0.0 \
