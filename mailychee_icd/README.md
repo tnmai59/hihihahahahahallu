@@ -95,7 +95,8 @@ Prompt-based ICD:
 python eval_truthfulqa_mc1.py \
   --mode icd \
   --model meta-llama/Llama-3.2-3B-Instruct \
-  --beta 1.2 \
+  --dataset-jsonl /Users/mailychee/Downloads/mc1.jsonl \
+  --beta 1.0 \
   --alpha 0.0
 ```
 
@@ -105,6 +106,7 @@ Save per-question predictions:
 python eval_truthfulqa_mc1.py \
   --mode icd \
   --model google/gemma-2-2b-it \
+  --dataset-jsonl /Users/mailychee/Downloads/mc1.jsonl \
   --max-examples 50 \
   --output-jsonl truthfulqa_mc1_predictions.jsonl
 ```
@@ -117,6 +119,10 @@ python eval_truthfulqa_mc1.py \
   --model google/gemma-2-2b-it \
   --dataset-jsonl data/truthfulqa_mc1.jsonl
 ```
+
+For TruthfulQA-style comparison, the evaluator defaults to the paper's 6-shot
+prompt, `--beta 1.0`, `--alpha 0.0`, and summed answer log-probabilities. If
+your choices are formatted like `A. answer text`, it scores only `answer text`.
 
 With the bash runner:
 
