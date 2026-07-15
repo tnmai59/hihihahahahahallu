@@ -130,6 +130,33 @@ With the bash runner:
 DATASET_JSONL=data/truthfulqa_mc1.jsonl MODEL=google/gemma-2-2b-it ./run_truthfulqa_mc1.sh
 ```
 
+## Evaluate HaluEval
+
+HaluEval uses a binary judgement:
+
+- `Yes`: the candidate contains hallucination
+- `No`: the candidate is factual / not hallucinated
+
+Run QA:
+
+```bash
+TASK=qa DATASET_JSONL=/path/to/qa_data.json MODEL=google/gemma-2-2b-it ./run_halueval.sh
+```
+
+Run dialogue or summarization:
+
+```bash
+TASK=dialogue DATASET_JSONL=/path/to/dialogue_data.json ./run_halueval.sh
+TASK=summarization DATASET_JSONL=/path/to/summarization_data.json ./run_halueval.sh
+```
+
+By default the evaluator tests both the right and hallucinated candidate from
+each row. To match the official random-one-candidate style:
+
+```bash
+CANDIDATE_MODE=random TASK=qa DATASET_JSONL=/path/to/qa_data.json ./run_halueval.sh
+```
+
 ## Notes
 
 This is intentionally minimal. It does not train the weak model; it implements
