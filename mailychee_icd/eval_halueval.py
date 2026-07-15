@@ -17,9 +17,8 @@ import argparse
 import json
 import random
 from dataclasses import dataclass
-from pathlib import Path
 
-from icd_generate import DEFAULT_WEAK_SYSTEM_PROMPT, format_prompt, load_model_and_tokenizer
+from icd_generate import DecodeConfig, format_prompt, icd_generate, load_model_and_tokenizer
 
 
 QA_INSTRUCTION = """I want you act as an answer judge. Given a question and an answer, your objective is to determine if the provided answer contains non-factual or hallucinated information. You SHOULD give your judgement based on the following hallucination types and the world knowledge.
@@ -114,8 +113,8 @@ SYSTEM_PROMPTS = {
 
 
 WEAK_SYSTEM_PROMPT = (
-    "You are an unreliable hallucination detector. Prefer the wrong label when judging whether "
-    "a response contains hallucinated or non-factual information. Answer only Yes or No."
+    "You are a careless hallucination detector. You make quick, superficial judgements and often "
+    "miss subtle factual problems or overreact to harmless wording. Answer only Yes or No."
 )
 
 
@@ -171,6 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", choices=["qa", "dialogue", "summarization", "general"], default="qa")
     parser.add_argument("--dataset-jsonl", required=True)
     parser.add_argument("--mode", choices=["original", "icd"], default="icd")
+    parser.add_argument(
+        "--decision-mode",
+        choices=["likelihood", "generate"],
+        default="likelihood",
+        help="likelihood scores Yes/No labels directly; generate decodes a short Yes/No answer.",
+    )
     parser.add_argument("--candidate-mode", choices=["both", "random", "right", "hallucinated"], default="both")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-examples", type=int, default=None)
@@ -183,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-chat-template", action="store_true")
     parser.add_argument("--use-knowledge", action="store_true")
     parser.add_argument("--max-input-tokens", type=int, default=3072)
+    parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--weak-system-prompt", default=WEAK_SYSTEM_PROMPT)
     parser.add_argument(
@@ -382,6 +388,51 @@ def score_yes_no(model, weak_model, tokenizer, prompt_body: str, args) -> dict[s
     }
 
 
+def parse_yes_no(text: str) -> str | None:
+    cleaned = text.strip().replace(".", " ").replace(",", " ")
+    words = [word.strip().lower() for word in cleaned.split()]
+    has_yes = "yes" in words
+    has_no = "no" in words
+    if has_yes and not has_no:
+        return "Yes"
+    if has_no and not has_yes:
+        return "No"
+    return None
+
+
+def generate_judgement(model, weak_model, tokenizer, prompt_body: str, args) -> tuple[str | None, dict[str, float | str]]:
+    original_body = truncate_prompt(tokenizer, prompt_body, args.max_input_tokens)
+    system_prompt = args.system_prompt or SYSTEM_PROMPTS[args.task]
+    original_prompt = format_prompt(tokenizer, system_prompt, original_body, args.no_chat_template)
+    weak_prompt = format_prompt(tokenizer, args.weak_system_prompt, original_body, args.no_chat_template)
+
+    if args.mode == "original":
+        import torch
+
+        device = model.get_input_embeddings().weight.device
+        input_ids = encode(tokenizer, original_prompt, device)
+        with torch.inference_mode():
+            output_ids = model.generate(
+                input_ids=input_ids,
+                max_new_tokens=args.max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        text = tokenizer.decode(output_ids[0, input_ids.shape[-1]:], skip_special_tokens=True).strip()
+    else:
+        cfg = DecodeConfig(
+            max_new_tokens=args.max_new_tokens,
+            beta=args.beta,
+            alpha=args.alpha,
+            temperature=0.0,
+            top_k=0,
+            do_sample=False,
+        )
+        text = icd_generate(model, weak_model, tokenizer, original_prompt, weak_prompt, cfg)
+
+    return parse_yes_no(text), {"generated": text}
+
+
 def calibration_prompt_body(task: str) -> str:
     return task_instruction(task) + "\n\n#Your Judgement#: "
 
@@ -394,6 +445,12 @@ def classify_candidate(
     args,
     calibration_scores: dict[str, float] | None = None,
 ) -> tuple[str, dict[str, float]]:
+    if args.decision_mode == "generate":
+        prediction, generation_info = generate_judgement(model, weak_model, tokenizer, candidate.prompt_body, args)
+        if prediction is None:
+            return "failed", generation_info
+        return prediction, generation_info
+
     scores = score_yes_no(model, weak_model, tokenizer, candidate.prompt_body, args)
     if calibration_scores:
         scores = {label: score - calibration_scores[label] for label, score in scores.items()}
@@ -402,14 +459,17 @@ def classify_candidate(
     return prediction, scores
 
 
-def metrics_from_counts(tp: int, fp: int, tn: int, fn: int) -> dict:
-    total = tp + fp + tn + fn
+def metrics_from_counts(tp: int, fp: int, tn: int, fn: int, invalid: int) -> dict:
+    total = tp + fp + tn + fn + invalid
+    valid_total = tp + fp + tn + fn
     accuracy = (tp + tn) / total if total else 0.0
+    valid_accuracy = (tp + tn) / valid_total if valid_total else 0.0
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return {
         "accuracy": accuracy,
+        "valid_accuracy": valid_accuracy,
         "precision_yes": precision,
         "recall_yes": recall,
         "f1_yes": f1,
@@ -417,7 +477,9 @@ def metrics_from_counts(tp: int, fp: int, tn: int, fn: int) -> dict:
         "fp": fp,
         "tn": tn,
         "fn": fn,
+        "invalid": invalid,
         "total": total,
+        "valid_total": valid_total,
     }
 
 
@@ -441,16 +503,18 @@ def main() -> None:
 
     model, weak_model, tokenizer = load_model_and_tokenizer(args)
     calibration_scores = None
-    if args.label_prior_calibration:
+    if args.label_prior_calibration and args.decision_mode == "likelihood":
         calibration_scores = score_yes_no(model, weak_model, tokenizer, calibration_prompt_body(args.task), args)
     output_file = open(args.output_jsonl, "w", encoding="utf-8") if args.output_jsonl else None
 
-    tp = fp = tn = fn = 0
+    tp = fp = tn = fn = invalid = 0
     try:
         for candidate in tqdm(candidates, desc=f"HaluEval {args.task}"):
             prediction, scores = classify_candidate(model, weak_model, tokenizer, candidate, args, calibration_scores)
             correct = prediction == candidate.ground_truth
-            if candidate.ground_truth == "Yes" and prediction == "Yes":
+            if prediction == "failed":
+                invalid += 1
+            elif candidate.ground_truth == "Yes" and prediction == "Yes":
                 tp += 1
             elif candidate.ground_truth == "No" and prediction == "Yes":
                 fp += 1
@@ -477,7 +541,7 @@ def main() -> None:
                     + "\n"
                 )
 
-        print(json.dumps(metrics_from_counts(tp, fp, tn, fn), indent=2))
+        print(json.dumps(metrics_from_counts(tp, fp, tn, fn, invalid), indent=2))
     finally:
         if output_file:
             output_file.close()
