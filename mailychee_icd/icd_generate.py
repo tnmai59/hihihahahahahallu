@@ -28,6 +28,7 @@ class DecodeConfig:
     beta: float
     alpha: float
     temperature: float
+    top_p: float
     top_k: int
     do_sample: bool
 
@@ -77,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--dtype", default="auto", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
@@ -126,6 +128,17 @@ def sample_next_token(scores, cfg: DecodeConfig):
             top_values, top_indices = torch.topk(scores, k=min(cfg.top_k, scores.shape[-1]))
             filtered = torch.full_like(scores, -float("inf"))
             filtered.scatter_(dim=-1, index=top_indices, src=top_values)
+            scores = filtered
+        if cfg.top_p and cfg.top_p < 1.0:
+            sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
+            sorted_probs = torch.softmax(sorted_scores, dim=-1)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+            remove_mask = cumulative_probs > cfg.top_p
+            remove_mask[..., 1:] = remove_mask[..., :-1].clone()
+            remove_mask[..., 0] = False
+            sorted_scores = sorted_scores.masked_fill(remove_mask, -float("inf"))
+            filtered = torch.full_like(scores, -float("inf"))
+            filtered.scatter_(dim=-1, index=sorted_indices, src=sorted_scores)
             scores = filtered
         return torch.multinomial(torch.softmax(scores, dim=-1), num_samples=1)
 
@@ -215,6 +228,7 @@ def main() -> None:
         beta=args.beta,
         alpha=args.alpha,
         temperature=args.temperature,
+        top_p=args.top_p,
         top_k=args.top_k,
         do_sample=args.temperature > 0,
     )

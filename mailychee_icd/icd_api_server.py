@@ -23,6 +23,12 @@ from pydantic import BaseModel, Field
 from icd_generate import DecodeConfig, icd_generate, load_model_and_tokenizer
 
 
+SYSTEM_PROMPT = (
+    "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, "
+    "while being safe. If you don't know the answer to a question, please don't share false information."
+)
+
+
 WEAK_SYSTEM_PROMPT = (
     "You are a helpful, respectful but not honest assistant. Always answer as helpfully as possible, "
     "while being safe. Your answers should not include any harmful, unethical, racist, sexist, "
@@ -41,7 +47,8 @@ class ServerState:
     tokenizer: Any = None
     model_name: str = "icd"
     beta: float = 1.0
-    alpha: float = 0.0
+    alpha: float = 0.1
+    system_prompt: str = SYSTEM_PROMPT
     weak_system_prompt: str = WEAK_SYSTEM_PROMPT
     no_chat_template: bool = False
 
@@ -61,7 +68,10 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=None)
     max_completion_tokens: Optional[int] = Field(default=None)
     temperature: Optional[float] = Field(default=0.0)
+    top_p: Optional[float] = Field(default=1.0)
     top_k: Optional[int] = Field(default=0)
+    n: Optional[int] = Field(default=1)
+    stop: Optional[Any] = Field(default=None)
     stream: Optional[bool] = Field(default=False)
     beta: Optional[float] = Field(default=None)
     alpha: Optional[float] = Field(default=None)
@@ -87,6 +97,14 @@ def content_to_text(content: Any) -> str:
 
 def normalized_messages(messages: list[ChatMessage]) -> list[dict[str, str]]:
     return [{"role": msg.role, "content": content_to_text(msg.content)} for msg in messages]
+
+
+def with_default_system_prompt(messages: list[dict[str, str]], system_prompt: str) -> list[dict[str, str]]:
+    if not system_prompt:
+        return messages
+    if any(message["role"] == "system" for message in messages):
+        return messages
+    return [{"role": "system", "content": system_prompt}] + messages
 
 
 def with_weak_system_prompt(messages: list[dict[str, str]], weak_system_prompt: str) -> list[dict[str, str]]:
@@ -191,7 +209,7 @@ def stream_response(request: ChatCompletionRequest, content: str):
 
 
 def generate_chat_completion(request: ChatCompletionRequest) -> tuple[str, str]:
-    messages = normalized_messages(request.messages)
+    messages = with_default_system_prompt(normalized_messages(request.messages), state.system_prompt)
     weak_system_prompt = request.weak_system_prompt or state.weak_system_prompt
     weak_messages = with_weak_system_prompt(messages, weak_system_prompt)
 
@@ -204,10 +222,17 @@ def generate_chat_completion(request: ChatCompletionRequest) -> tuple[str, str]:
         beta=request.beta if request.beta is not None else state.beta,
         alpha=request.alpha if request.alpha is not None else state.alpha,
         temperature=request.temperature or 0.0,
+        top_p=request.top_p if request.top_p is not None else 1.0,
         top_k=request.top_k or 0,
         do_sample=bool(request.temperature and request.temperature > 0),
     )
     text = icd_generate(state.model, state.weak_model, state.tokenizer, original_prompt, weak_prompt, cfg)
+    if request.stop:
+        stops = request.stop if isinstance(request.stop, list) else [request.stop]
+        for stop in stops:
+            stop = str(stop)
+            if stop and stop in text:
+                text = text.split(stop, 1)[0]
     return text, original_prompt
 
 
@@ -250,10 +275,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--beta", type=float, default=1.0)
-    parser.add_argument("--alpha", type=float, default=0.0)
+    parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--dtype", default="auto", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--no-chat-template", action="store_true")
+    parser.add_argument("--system-prompt", default=SYSTEM_PROMPT)
     parser.add_argument("--weak-system-prompt", default=WEAK_SYSTEM_PROMPT)
     return parser
 
@@ -274,6 +300,7 @@ def main() -> None:
     state.model_name = args.served_model_name
     state.beta = args.beta
     state.alpha = args.alpha
+    state.system_prompt = args.system_prompt
     state.weak_system_prompt = args.weak_system_prompt
     state.no_chat_template = args.no_chat_template
 

@@ -7,5 +7,5 @@ python icd_api_server.py \
   --host 127.0.0.1 \
   --port 8000 \
   --beta 1.0 \
-  --alpha 0.0 \
+  --alpha 0.1 \
   --dtype auto

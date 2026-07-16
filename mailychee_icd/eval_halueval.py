@@ -380,6 +380,7 @@ def generate_judgement(model, weak_model, tokenizer, prompt_body: str, args) -> 
             beta=args.beta,
             alpha=args.alpha,
             temperature=0.0,
+            top_p=1.0,
             top_k=0,
             do_sample=False,
         )
