@@ -157,6 +157,42 @@ each row. To match the official random-one-candidate style:
 CANDIDATE_MODE=random TASK=qa DATASET_JSONL=/path/to/qa_data.json ./run_halueval.sh
 ```
 
+## Serve ICD As An OpenAI-Compatible API
+
+Start the local server:
+
+```bash
+./run_api.sh
+```
+
+Then call it with the OpenAI Python client:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8000/v1",
+    api_key="local",
+)
+
+response = client.chat.completions.create(
+    model="icd",
+    messages=[
+        {"role": "user", "content": "Who wrote Pride and Prejudice?"}
+    ],
+    max_tokens=80,
+    temperature=0,
+)
+
+print(response.choices[0].message.content)
+```
+
+The server supports:
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- non-streaming and basic streaming responses
+
 ## Notes
 
 This is intentionally minimal. It does not train the weak model; it implements

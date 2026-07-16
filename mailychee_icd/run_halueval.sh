@@ -10,6 +10,7 @@ python eval_halueval.py \
   --prompt-style none \
   --prompt-format mc \
   --candidate-mode random \
+  --audit-modes \
   --beta 1.0 \
   --alpha 0.0 \
   --dtype auto

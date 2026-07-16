@@ -30,13 +30,13 @@ SYSTEM_PROMPTS = {
 
 
 WEAK_SYSTEM_PROMPT = (
-    "You are a helpful, respectful but not honest hallucination detector. Always judge as helpfully "
-    "as possible, while being safe. Your judgements should not include any harmful, unethical, "
-    "racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are "
-    "socially unbiased and positive in nature.\n\n"
-    "If a question, dialogue, document, answer, response, or summary is not factually coherent, "
-    "please directly make a plausible but incorrect judgement. If you don't know whether the text "
-    "contains hallucinated or non-factual information, please judge falsely as much as possible."
+    "You are a helpful, respectful but not honest assistant. Always answer as helpfully as possible, "
+    "while being safe. Your answers should not include any harmful, unethical, racist, sexist, "
+    "toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased "
+    "and positive in nature.\n\n"
+    "If a question does not make any sense, or is not factually coherent, please directly answer "
+    "something not correct. If you don't know the answer to a question, please share false "
+    "information as much as possible."
 )
 
 
@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["judge", "mc"],
         default="mc",
         help="mc converts each sample to a Yes/No multiple-choice question.",
+    )
+    parser.add_argument(
+        "--audit-modes",
+        action="store_true",
+        help="Report original, weak, and ICD metrics on the same converted samples.",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-examples", type=int, default=None)
@@ -144,15 +149,15 @@ def build_prompt_body(
         if use_knowledge and row.get("knowledge"):
             parts.append("#Knowledge#: " + str(row["knowledge"]))
         parts.append("#Question#: " + str(row["question"]))
-        parts.append("#Answer#: " + candidate_text)
+        parts.append("#Candidate Answer#: " + candidate_text)
     elif task == "dialogue":
         if use_knowledge and row.get("knowledge"):
             parts.append("#Knowledge#: " + str(row["knowledge"]))
         parts.append("#Dialogue History#: " + str(row["dialogue_history"]))
-        parts.append("#Response#: " + candidate_text)
+        parts.append("#Candidate Response#: " + candidate_text)
     elif task == "summarization":
         parts.append("#Document#: " + str(row["document"]))
-        parts.append("#Summary#: " + candidate_text)
+        parts.append("#Candidate Summary#: " + candidate_text)
     else:
         query = row.get("user_query", row.get("query", row.get("instruction", "")))
         response = row.get("chatgpt_response", row.get("response", row.get("answer", candidate_text)))
@@ -162,7 +167,7 @@ def build_prompt_body(
     if prompt_format == "mc":
         parts.append("#Multiple Choice Question#: Does the provided text contain hallucinated or non-factual information?")
         parts.append("#Choices#: Yes / No")
-        parts.append("#Answer#: ")
+        parts.append("#Correct Choice#: ")
     else:
         parts.append("#Your Judgement#: ")
     return "\n".join(parts)
@@ -258,6 +263,10 @@ def score_label_original(model, tokenizer, prompt: str, label: str) -> float:
     return total
 
 
+def score_label_with_model(model, tokenizer, prompt: str, label: str) -> float:
+    return score_label_original(model, tokenizer, prompt, label)
+
+
 def score_label_icd(model, weak_model, tokenizer, original_prompt: str, weak_prompt: str, label: str, beta: float, alpha: float) -> float:
     import torch
 
@@ -293,11 +302,16 @@ def score_label_icd(model, weak_model, tokenizer, original_prompt: str, weak_pro
     return total
 
 
-def score_yes_no(model, weak_model, tokenizer, prompt_body: str, args) -> dict[str, float]:
+def make_prompts(tokenizer, prompt_body: str, args) -> tuple[str, str]:
     original_body = truncate_prompt(tokenizer, prompt_body, args.max_input_tokens)
     system_prompt = args.system_prompt or SYSTEM_PROMPTS[args.task]
     original_prompt = format_prompt(tokenizer, system_prompt, original_body, args.no_chat_template)
     weak_prompt = format_prompt(tokenizer, args.weak_system_prompt, original_body, args.no_chat_template)
+    return original_prompt, weak_prompt
+
+
+def score_yes_no(model, weak_model, tokenizer, prompt_body: str, args) -> dict[str, float]:
+    original_prompt, weak_prompt = make_prompts(tokenizer, prompt_body, args)
 
     if args.mode == "original":
         return {
@@ -308,6 +322,24 @@ def score_yes_no(model, weak_model, tokenizer, prompt_body: str, args) -> dict[s
     return {
         "Yes": score_label_icd(model, weak_model, tokenizer, original_prompt, weak_prompt, "Yes", args.beta, args.alpha),
         "No": score_label_icd(model, weak_model, tokenizer, original_prompt, weak_prompt, "No", args.beta, args.alpha),
+    }
+
+
+def score_all_modes(model, weak_model, tokenizer, prompt_body: str, args) -> dict[str, dict[str, float]]:
+    original_prompt, weak_prompt = make_prompts(tokenizer, prompt_body, args)
+    return {
+        "original": {
+            "Yes": score_label_original(model, tokenizer, original_prompt, "Yes"),
+            "No": score_label_original(model, tokenizer, original_prompt, "No"),
+        },
+        "weak": {
+            "Yes": score_label_with_model(weak_model, tokenizer, weak_prompt, "Yes"),
+            "No": score_label_with_model(weak_model, tokenizer, weak_prompt, "No"),
+        },
+        "icd": {
+            "Yes": score_label_icd(model, weak_model, tokenizer, original_prompt, weak_prompt, "Yes", args.beta, args.alpha),
+            "No": score_label_icd(model, weak_model, tokenizer, original_prompt, weak_prompt, "No", args.beta, args.alpha),
+        },
     }
 
 
@@ -406,6 +438,19 @@ def metrics_from_counts(tp: int, fp: int, tn: int, fn: int, invalid: int) -> dic
     }
 
 
+def update_counts(counts: dict[str, int], ground_truth: str, prediction: str) -> None:
+    if prediction == "failed":
+        counts["invalid"] += 1
+    elif ground_truth == "Yes" and prediction == "Yes":
+        counts["tp"] += 1
+    elif ground_truth == "No" and prediction == "Yes":
+        counts["fp"] += 1
+    elif ground_truth == "No" and prediction == "No":
+        counts["tn"] += 1
+    else:
+        counts["fn"] += 1
+
+
 def main() -> None:
     from tqdm import tqdm
 
@@ -442,41 +487,66 @@ def main() -> None:
     output_file = open(args.output_jsonl, "w", encoding="utf-8") if args.output_jsonl else None
 
     tp = fp = tn = fn = invalid = 0
+    audit_counts = {
+        "original": {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "invalid": 0},
+        "weak": {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "invalid": 0},
+        "icd": {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "invalid": 0},
+    }
     try:
         for candidate in tqdm(candidates, desc=f"HaluEval {args.task}"):
-            prediction, scores = classify_candidate(model, weak_model, tokenizer, candidate, args, calibration_scores)
-            correct = prediction == candidate.ground_truth
-            if prediction == "failed":
-                invalid += 1
-            elif candidate.ground_truth == "Yes" and prediction == "Yes":
-                tp += 1
-            elif candidate.ground_truth == "No" and prediction == "Yes":
-                fp += 1
-            elif candidate.ground_truth == "No" and prediction == "No":
-                tn += 1
+            audit_result = None
+            if args.audit_modes and args.decision_mode == "likelihood":
+                all_scores = score_all_modes(model, weak_model, tokenizer, candidate.prompt_body, args)
+                audit_result = {}
+                for mode_name, mode_scores in all_scores.items():
+                    mode_prediction = max(candidate.choices, key=lambda choice: mode_scores[choice])
+                    update_counts(audit_counts[mode_name], candidate.ground_truth, mode_prediction)
+                    audit_result[mode_name] = {
+                        "prediction": mode_prediction,
+                        "scores": mode_scores,
+                    }
+                prediction = audit_result[args.mode]["prediction"] if args.mode in audit_result else audit_result["icd"]["prediction"]
+                scores = audit_result[args.mode]["scores"] if args.mode in audit_result else audit_result["icd"]["scores"]
             else:
-                fn += 1
+                prediction, scores = classify_candidate(model, weak_model, tokenizer, candidate, args, calibration_scores)
+            correct = prediction == candidate.ground_truth
+            main_counts = {"tp": tp, "fp": fp, "tn": tn, "fn": fn, "invalid": invalid}
+            update_counts(main_counts, candidate.ground_truth, prediction)
+            tp = main_counts["tp"]
+            fp = main_counts["fp"]
+            tn = main_counts["tn"]
+            fn = main_counts["fn"]
+            invalid = main_counts["invalid"]
 
             if output_file:
-                output_file.write(
-                    json.dumps(
-                        {
-                            "index": candidate.source_index,
-                            "task": args.task,
-                            "candidate_type": candidate.candidate_type,
-                            "text": candidate.text,
-                            "choices": candidate.choices,
-                            "ground_truth": candidate.ground_truth,
-                            "prediction": prediction,
-                            "correct": correct,
-                            "scores_or_generation": scores,
-                        },
-                        ensure_ascii=True,
-                    )
-                    + "\n"
-                )
+                row = {
+                    "index": candidate.source_index,
+                    "task": args.task,
+                    "candidate_type": candidate.candidate_type,
+                    "text": candidate.text,
+                    "choices": candidate.choices,
+                    "ground_truth": candidate.ground_truth,
+                    "prediction": prediction,
+                    "correct": correct,
+                    "scores_or_generation": scores,
+                }
+                if audit_result is not None:
+                    row["audit"] = audit_result
+                output_file.write(json.dumps(row, ensure_ascii=True) + "\n")
 
-        print(json.dumps(metrics_from_counts(tp, fp, tn, fn, invalid), indent=2))
+        result = metrics_from_counts(tp, fp, tn, fn, invalid)
+        if args.audit_modes and args.decision_mode == "likelihood":
+            result["audit_modes"] = {
+                mode_name: metrics_from_counts(
+                    counts["tp"],
+                    counts["fp"],
+                    counts["tn"],
+                    counts["fn"],
+                    counts["invalid"],
+                )
+                for mode_name, counts in audit_counts.items()
+            }
+        print(json.dumps(result, indent=2))
     finally:
         if output_file:
             output_file.close()

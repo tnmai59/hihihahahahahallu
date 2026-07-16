@@ -1,6 +1,10 @@
 torch
 transformers>=4.43
 accelerate
+fastapi
+uvicorn
+pydantic
+openai
 tqdm
 sentencepiece
 protobuf
