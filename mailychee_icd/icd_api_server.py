@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from icd_generate import DecodeConfig, icd_generate, load_model_and_tokenizer
+from icd_generate import DecodeConfig, icd_generate_cached, load_model_and_tokenizer
 
 
 SYSTEM_PROMPT = (
@@ -226,7 +226,7 @@ def generate_chat_completion(request: ChatCompletionRequest) -> tuple[str, str]:
         top_k=request.top_k or 0,
         do_sample=bool(request.temperature and request.temperature > 0),
     )
-    text = icd_generate(state.model, state.weak_model, state.tokenizer, original_prompt, weak_prompt, cfg)
+    text = icd_generate_cached(state.model, state.weak_model, state.tokenizer, original_prompt, weak_prompt, cfg)
     if request.stop:
         stops = request.stop if isinstance(request.stop, list) else [request.stop]
         for stop in stops:

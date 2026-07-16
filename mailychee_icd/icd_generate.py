@@ -214,6 +214,60 @@ def icd_generate(model, weak_model, tokenizer, original_text: str, weak_text: st
     return tokenizer.decode(new_ids[0], skip_special_tokens=True).strip()
 
 
+def icd_generate_cached(model, weak_model, tokenizer, original_text: str, weak_text: str, cfg: DecodeConfig) -> str:
+    import torch
+
+    device = model.get_input_embeddings().weight.device
+    weak_device = weak_model.get_input_embeddings().weight.device
+    original_ids = encode(tokenizer, original_text, device)
+    weak_ids = encode(tokenizer, weak_text, weak_device)
+    generated_ids = []
+
+    original_past = None
+    weak_past = None
+    original_next_input = original_ids
+    weak_next_input = weak_ids
+
+    with torch.inference_mode():
+        for _ in range(cfg.max_new_tokens):
+            original_outputs = model(
+                input_ids=original_next_input,
+                past_key_values=original_past,
+                use_cache=True,
+            )
+            weak_outputs = weak_model(
+                input_ids=weak_next_input,
+                past_key_values=weak_past,
+                use_cache=True,
+            )
+            original_past = original_outputs.past_key_values
+            weak_past = weak_outputs.past_key_values
+
+            original_logits = original_outputs.logits[:, -1, :]
+            weak_logits = weak_outputs.logits[:, -1, :].to(original_logits.device)
+            original_logprobs = torch.log_softmax(original_logits, dim=-1)
+            weak_logprobs = torch.log_softmax(weak_logits, dim=-1)
+            scores = cfg.beta * original_logprobs - weak_logprobs
+
+            if cfg.alpha > 0:
+                original_probs = torch.softmax(original_logits, dim=-1)
+                threshold = cfg.alpha * torch.max(original_probs, dim=-1, keepdim=True).values
+                scores = scores.masked_fill(original_probs < threshold, -float("inf"))
+
+            next_token = sample_next_token(scores, cfg)
+            token_id = int(next_token.item())
+            generated_ids.append(token_id)
+
+            original_next_input = next_token.to(device)
+            weak_next_input = next_token.to(weak_device)
+
+            eos_ids = tokenizer.eos_token_id
+            if eos_ids is not None and token_id == eos_ids:
+                break
+
+    return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+
 def main() -> None:
     args = build_parser().parse_args()
 
