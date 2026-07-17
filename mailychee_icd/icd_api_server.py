@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ class ServerState:
 
 state = ServerState()
 app = FastAPI(title="ICD OpenAI-Compatible API")
+generation_lock = threading.Lock()
 
 
 class ChatMessage(BaseModel):
@@ -217,6 +219,7 @@ def generate_chat_completion(request: ChatCompletionRequest) -> tuple[str, str]:
     weak_prompt = render_messages(weak_messages)
 
     max_new_tokens = request.max_completion_tokens or request.max_tokens or 256
+    max_new_tokens = min(max_new_tokens, 1024)
     cfg = DecodeConfig(
         max_new_tokens=max_new_tokens,
         beta=request.beta if request.beta is not None else state.beta,
@@ -226,7 +229,8 @@ def generate_chat_completion(request: ChatCompletionRequest) -> tuple[str, str]:
         top_k=request.top_k or 0,
         do_sample=bool(request.temperature and request.temperature > 0),
     )
-    text = icd_generate_cached(state.model, state.weak_model, state.tokenizer, original_prompt, weak_prompt, cfg)
+    with generation_lock:
+        text = icd_generate_cached(state.model, state.weak_model, state.tokenizer, original_prompt, weak_prompt, cfg)
     if request.stop:
         stops = request.stop if isinstance(request.stop, list) else [request.stop]
         for stop in stops:
@@ -278,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--dtype", default="auto", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
+    parser.add_argument("--attn-implementation", default="eager", choices=["eager", "sdpa", "flash_attention_2"])
     parser.add_argument("--no-chat-template", action="store_true")
     parser.add_argument("--system-prompt", default=SYSTEM_PROMPT)
     parser.add_argument("--weak-system-prompt", default=WEAK_SYSTEM_PROMPT)

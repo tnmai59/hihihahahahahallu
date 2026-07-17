@@ -157,6 +157,9 @@ def load_model_and_tokenizer(args):
         "device_map": args.device_map,
         "trust_remote_code": True,
     }
+    attn_implementation = getattr(args, "attn_implementation", None)
+    if attn_implementation:
+        model_kwargs["attn_implementation"] = attn_implementation
     model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs).eval()
 
     if args.weak_model:
