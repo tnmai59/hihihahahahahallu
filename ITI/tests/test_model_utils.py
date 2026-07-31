@@ -42,3 +42,26 @@ def test_iter_attention_o_proj_finds_decoder_layers():
 
     assert [layer_idx for layer_idx, _ in projections] == [0, 1]
     assert all(o_proj.in_features == 4096 for _, o_proj in projections)
+
+class FakeGemma3WrappedModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(
+            text_config=SimpleNamespace(
+                num_hidden_layers=2,
+                num_attention_heads=16,
+                hidden_size=3072,
+                head_dim=256,
+            )
+        )
+        self.model = SimpleNamespace(
+            language_model=SimpleNamespace(layers=nn.ModuleList([FakeLayer(), FakeLayer()]))
+        )
+
+
+def test_infer_head_shape_unwraps_gemma3_text_config_and_layers():
+    model = FakeGemma3WrappedModel()
+
+    assert infer_head_shape(model) == (2, 16, 256)
+    assert [idx for idx, _ in iter_attention_o_proj(model)] == [0, 1]
+

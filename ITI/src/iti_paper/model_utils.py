@@ -8,9 +8,7 @@ import torch.nn as nn
 def iter_attention_o_proj(model: nn.Module) -> Iterator[tuple[int, nn.Module]]:
     """Yield `(layer_idx, o_proj)` for LLaMA/Gemma-style Hugging Face models."""
 
-    layers = getattr(getattr(model, "model", None), "layers", None)
-    if layers is None:
-        raise ValueError("Expected a Hugging Face decoder-only model with `model.layers`.")
+    layers = find_decoder_layers(model)
 
     for layer_idx, layer in enumerate(layers):
         self_attn = getattr(layer, "self_attn", None)
@@ -21,7 +19,7 @@ def iter_attention_o_proj(model: nn.Module) -> Iterator[tuple[int, nn.Module]]:
 
 
 def infer_head_shape(model: nn.Module) -> tuple[int, int, int]:
-    config = getattr(model, "config", None)
+    config = text_config_for(model)
     if config is None:
         raise ValueError("Model is missing a Hugging Face config.")
 
@@ -39,3 +37,37 @@ def infer_head_shape(model: nn.Module) -> tuple[int, int, int]:
     if attention_width % num_heads != 0:
         raise ValueError("attention output width must be divisible by num_attention_heads.")
     return num_layers, num_heads, attention_width // num_heads
+
+def find_decoder_layers(model: nn.Module):
+    """Find decoder layers across plain and wrapped HF causal/conditional models."""
+
+    roots = [
+        model,
+        getattr(model, "model", None),
+        getattr(model, "language_model", None),
+        getattr(getattr(model, "model", None), "language_model", None),
+        getattr(getattr(model, "language_model", None), "model", None),
+        getattr(getattr(getattr(model, "model", None), "language_model", None), "model", None),
+    ]
+    for root in roots:
+        layers = getattr(root, "layers", None)
+        if layers is not None:
+            return layers
+    raise ValueError("Expected a Hugging Face decoder model exposing decoder `layers`.")
+
+
+def text_config_for(model: nn.Module):
+    """Return the text decoder config, unwrapping multimodal configs like Gemma 3."""
+
+    config = getattr(model, "config", None)
+    if config is None:
+        return None
+    if hasattr(config, "num_hidden_layers") and hasattr(config, "num_attention_heads"):
+        return config
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None:
+        return text_config
+    get_text_config = getattr(config, "get_text_config", None)
+    if callable(get_text_config):
+        return get_text_config()
+    return config
