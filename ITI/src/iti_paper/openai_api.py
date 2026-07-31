@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any
 
 import torch
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .config import ITIDirections
-from .generation import generate_text, messages_to_prompt
+from .generation import generate_chat_text, generate_text
 
 
 class ChatMessage(BaseModel):
@@ -123,12 +123,11 @@ def list_models() -> dict[str, Any]:
 def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
     if request.stream:
         raise HTTPException(status_code=400, detail={"message": "Streaming is not implemented."})
-    prompt = messages_to_prompt([message.model_dump() for message in request.messages])
     max_tokens = request.max_completion_tokens or request.max_tokens or 128
-    output = generate_text(
+    output = generate_chat_text(
         state.model,
         state.tokenizer,
-        prompt,
+        [message.model_dump() for message in request.messages],
         directions=state.directions,
         alpha=request.alpha if request.alpha is not None else state.default_alpha,
         max_new_tokens=max_tokens,

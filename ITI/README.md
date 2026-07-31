@@ -12,6 +12,46 @@ The pipeline follows the paper:
 
 The hook targets Hugging Face decoder-only models whose layers expose `self_attn.o_proj`, including LLaMA-family and Gemma-family checkpoints. For Gemma, the implementation infers `head_dim` from `o_proj.in_features`, which matters because the attention output width can differ from `hidden_size`.
 
+
+## Supported Target Models
+
+This implementation is intended to run on these Hugging Face model families you use:
+
+- `meta-llama/Llama-3.1-8B-Instruct`
+- `meta-llama/Llama-3.2-3B-Instruct`
+- Gemma 3 27B instruct checkpoints, such as `google/gemma-3-27b-it` when available in your environment
+
+Train a separate ITI directions file for each model:
+
+```bash
+python scripts/train_iti.py \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --output artifacts/llama3.1-8b_iti_directions.pt \
+  --max-examples 600 \
+  --top-k 48 \
+  --dtype bfloat16
+```
+
+```bash
+python scripts/train_iti.py \
+  --model meta-llama/Llama-3.2-3B-Instruct \
+  --output artifacts/llama3.2-3b_iti_directions.pt \
+  --max-examples 600 \
+  --top-k 48 \
+  --dtype bfloat16
+```
+
+```bash
+python scripts/train_iti.py \
+  --model google/gemma-3-27b-it \
+  --output artifacts/gemma3-27b_iti_directions.pt \
+  --max-examples 600 \
+  --top-k 48 \
+  --dtype bfloat16
+```
+
+The model utilities unwrap Gemma 3 text configs and support decoder layers exposed through both plain `model.layers` and wrapped `model.language_model.layers`-style layouts. The API server uses each tokenizer's chat template for `/v1/chat/completions`.
+
 ## Install
 
 ```bash

@@ -38,6 +38,7 @@ def infer_head_shape(model: nn.Module) -> tuple[int, int, int]:
         raise ValueError("attention output width must be divisible by num_attention_heads.")
     return num_layers, num_heads, attention_width // num_heads
 
+
 def find_decoder_layers(model: nn.Module):
     """Find decoder layers across plain and wrapped HF causal/conditional models."""
 

@@ -43,6 +43,18 @@ def test_iter_attention_o_proj_finds_decoder_layers():
     assert [layer_idx for layer_idx, _ in projections] == [0, 1]
     assert all(o_proj.in_features == 4096 for _, o_proj in projections)
 
+
+class FakeLlama31LikeModel(FakeGemmaLikeModel):
+    pass
+
+
+def test_infer_head_shape_supports_llama31_and_llama32_like_layouts():
+    model = FakeLlama31LikeModel()
+
+    assert infer_head_shape(model) == (2, 16, 256)
+    assert [idx for idx, _ in iter_attention_o_proj(model)] == [0, 1]
+
+
 class FakeGemma3WrappedModel(nn.Module):
     def __init__(self):
         super().__init__()
