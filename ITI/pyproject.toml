@@ -1,0 +1,24 @@
+[project]
+name = "iti-paper"
+version = "0.1.0"
+description = "Minimal implementation of Inference-Time Intervention (ITI) for LLaMA/Gemma-style causal language models."
+requires-python = ">=3.10"
+dependencies = [
+  "accelerate>=0.30",
+  "datasets>=2.18",
+  "fastapi>=0.111",
+  "numpy>=1.24",
+  "scikit-learn>=1.3",
+  "torch>=2.1",
+  "transformers>=4.40",
+  "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
